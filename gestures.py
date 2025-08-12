@@ -10,29 +10,29 @@ FRAME_W, FRAME_H = 640, 480
 LO_W, LO_H       = 320, 180
 
 # Crossing gates (must traverse across the full screen)
-CROSS_L = 0.20
-CROSS_R = 0.80
-COOLDOWN_S = 0.20               # quick back-to-back flicks
-ABSENCE_RESET_S = 0.25          # if finger vanishes, reset state
+# Crossing gates (a bit wider so shorter swipes count)
+CROSS_L = 0.15
+CROSS_R = 0.85
+COOLDOWN_S = 0.18          # allow faster repeats
+ABSENCE_RESET_S = 0.20     # recover quicker if finger vanishes
 
-# "Huge finger" constraints (in lores coordinates)
-MIN_H_FRAC   = 0.92             # >=92% of height
-MIN_AR       = 3.8              # tall & skinny
-MAX_W_FRAC   = 0.35
-MIN_W_FRAC   = 0.02
+# "Huge finger" constraints (relaxed but still finger-ish)
+MIN_H_FRAC = 0.88          # was 0.92
+MIN_AR     = 3.2           # was 3.8
+MAX_W_FRAC = 0.40          # allow slightly wider finger/blur
+MIN_W_FRAC = 0.015         # allow thinner
 
-# Motion / preprocessing
-MORPH_K      = 3
-ADAPT_K      = 1.8
-THR_FLOOR    = 14
-HEADLESS     = os.environ.get("DISPLAY", "") == ""
+# Motion / preprocessing (slightly more sensitive)
+ADAPT_K   = 1.6            # was 1.8
+THR_FLOOR = 12             # was 14
 
-# Hysteresis so tiny jitter around the gates doesn’t flip state
-HYST = 0.03
+# Hysteresis (smaller gap so it arms/fires easier)
+HYST = 0.02                # was 0.03
 L_ARM  = CROSS_L - HYST
 L_FIRE = CROSS_L + HYST
 R_ARM  = CROSS_R + HYST
 R_FIRE = CROSS_R - HYST
+
 
 # =========================
 # Helpers
