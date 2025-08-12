@@ -22,9 +22,9 @@ R_ARM, R_FIRE = CROSS_R + HYST, CROSS_R - HYST
 
 COOLDOWN_S       = 0.12         # quick repeats
 ABSENCE_RESET_S  = 0.10
-SPAN_WINDOW_S    = 0.20         # window to consider span
-SPAN_THR         = 0.55         # must cover ≥ 55% width in window
-VEL_THR          = 3.5          # normalized widths/sec (|dx|/dt) threshold
+SPAN_WINDOW_S    = 0.28         # window to consider span
+SPAN_THR         = 0.45         # must cover ≥ 55% width in window
+VEL_THR          = 2.2          # normalized widths/sec (|dx|/dt) threshold
 ENERGY_MIN_FRAC  = 0.015        # min total motion energy to accept frame
 
 # 1D smoothing over columns (frames) to stabilize peak
