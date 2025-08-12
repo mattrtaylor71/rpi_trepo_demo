@@ -37,7 +37,6 @@ def norm(vx, vy):
     return math.hypot(vx, vy)
 
 def gesture_from_traj(traj):
-    """Classic swipe from accumulated points (normalized coords, 0..1)."""
     if len(traj) < 2: 
         return None
     x0, y0 = traj[0]
@@ -53,7 +52,6 @@ def gesture_from_traj(traj):
     return None
 
 def crossing_swipe(x_prev, x_curr):
-    """Fire even for 1–2 frame flicks if it crosses gates."""
     if x_prev is None or x_curr is None:
         return None
     if x_prev < CROSS_L and x_curr > CROSS_R:
@@ -69,8 +67,20 @@ def pinch_ratio(lm):
     d_size = math.hypot(w.x - m.x, w.y - m.y) + 1e-6
     return d_tip / d_size
 
+def luma_from_lores(yuv_lo):
+    """
+    Picamera2 YUV420 lores returns a 2D planar image with Y on top (LO_H x LO_W).
+    If a 3-channel array ever appears, fall back to channel 0.
+    """
+    if yuv_lo.ndim == 2:
+        return yuv_lo[:LO_H, :LO_W]
+    elif yuv_lo.ndim == 3:
+        return yuv_lo[:, :, 0]
+    else:
+        raise ValueError("Unexpected lores array shape: %r" % (yuv_lo.shape,))
+
 # =========================
-# MediaPipe Hands (for pinch + stable centroid when full hand is visible)
+# MediaPipe Hands (for pinch + centroid when full hand visible)
 # =========================
 mp_hands = mp.solutions.hands
 hands = mp_hands.Hands(
@@ -87,18 +97,18 @@ picam2 = Picamera2()
 config = picam2.create_video_configuration(
     main={"format":"RGB888", "size": (FRAME_W, FRAME_H)},
     lores={"format":"YUV420", "size": (LO_W, LO_H)},
-    display="main",  # show main stream in preview
+    display="main",
 )
 picam2.configure(config)
 
-# Aim for high FPS; keep AE on so it’s not black. Adjust gain for brightness.
+# Try high FPS; keep AE on so it isn’t dark. Adjust gain to taste.
 try:
     picam2.set_controls({
         "AeEnable": True,
         "AwbEnable": True,
-        "AfMode": 2,                         # continuous AF if supported
-        "FrameDurationLimits": (16666, 16666),  # ~60 fps target
-        "AnalogueGain": 8.0,                 # bump if too dark (4–12 typical)
+        "AfMode": 2,                          # continuous AF if supported
+        "FrameDurationLimits": (16666, 16666),# ~60 fps
+        "AnalogueGain": 8.0,                  # bump if too dark (4–12 typical)
     })
 except Exception:
     pass
@@ -108,27 +118,27 @@ picam2.start()
 # =========================
 # State
 # =========================
-pts         = collections.deque(maxlen=HIST_LEN)  # normalized points history
-last_fire   = 0.0
-pinch_state = False
-prev_gray_lo = None
-frame_idx   = 0
-roi_px      = (int(ROI_Y0*LO_H), int(ROI_Y1*LO_H))  # ROI in lores coords
-morph       = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-last_x_norm = None  # for crossing gate
+pts           = collections.deque(maxlen=HIST_LEN)  # normalized points history
+last_fire     = 0.0
+pinch_state   = False
+prev_gray_lo  = None
+frame_idx     = 0
+roi_px        = (int(ROI_Y0*LO_H), int(ROI_Y1*LO_H))  # ROI in lores coords
+morph         = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+last_x_norm   = None  # for crossing gate
 
 try:
     while True:
-        # -------- Fast detection frame (lores) --------
-        yuv_lo = picam2.capture_array("lores")     # YUV420
-        lo_y   = yuv_lo[:, :, 0]                   # luma plane (LO_H x LO_W)
+        # -------- Fast detection frame (lores Y plane) --------
+        yuv_lo  = picam2.capture_array("lores")   # planar YUV420 -> 2D
+        lo_y    = luma_from_lores(yuv_lo)         # (LO_H, LO_W) luma
 
         # -------- Pretty preview frame (main) --------
         rgb = picam2.capture_array("main")
         bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
         dbg = bgr.copy()
 
-        # -------- Hand landmarks (preferred when full hand is visible) --------
+        # -------- Hand landmarks (preferred when full hand visible) --------
         got_hand = False
         gesture_text = ""
         pinch_text   = "PINCH: NO"
@@ -138,8 +148,6 @@ try:
             lm = res.multi_hand_landmarks[0].landmark
             cx = (lm[5].x + lm[9].x + lm[0].x) / 3.0
             cy = (lm[5].y + lm[9].y + lm[0].y) / 3.0
-            # Only accept hand centroid if it lies within the (full-frame) ROI band
-            # Map ROI from lores to main normalized (same 0..1 range, so reuse)
             if ROI_Y0 <= cy <= ROI_Y1:
                 pts.append((cx, cy))
                 got_hand = True
@@ -202,10 +210,10 @@ try:
 
                     # Draw bbox on preview (scale to main)
                     x0 = int(x * (FRAME_W / LO_W))
-                    y0 = int(y * (FRAME_H / LO_H))
+                    y0m = int(y * (FRAME_H / LO_H))
                     x1 = int((x + wbb) * (FRAME_W / LO_W))
-                    y1 = int((y + hbb) * (FRAME_H / LO_H))
-                    cv2.rectangle(dbg, (x0, y0), (x1, y1), (255, 255, 255), 2)
+                    y1m = int((y + hbb) * (FRAME_H / LO_H))
+                    cv2.rectangle(dbg, (x0, y0m), (x1, y1m), (255, 255, 255), 2)
 
                 # Inset: threshold map (scaled) for debugging
                 inset = cv2.resize(th_masked, (160, 120))
@@ -227,9 +235,8 @@ try:
                 print(sw)
                 fired = True
         else:
-            # keep last_x_norm fresh when MediaPipe hand centroid is available
-            if got_hand:
-                last_x_norm = pts[-1][0] if pts else last_x_norm
+            if got_hand and pts:
+                last_x_norm = pts[-1][0]
 
         # Classic trajectory swipe (if not already fired)
         if not fired and (now - last_fire) > COOLDOWN_S and not pinch_state:
