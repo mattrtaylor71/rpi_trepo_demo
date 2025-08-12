@@ -9,7 +9,12 @@ from picamera2 import Picamera2
 FRAME_W, FRAME_H = 640, 480
 LO_W, LO_H       = 320, 180
 
-# Crossing gates (must traverse across the full screen)
+
+# Motion / preprocessing
+MORPH_K      = 3
+HEADLESS     = os.environ.get("DISPLAY", "") == ""
+
+
 # Crossing gates (a bit wider so shorter swipes count)
 CROSS_L = 0.15
 CROSS_R = 0.85
@@ -32,7 +37,6 @@ L_ARM  = CROSS_L - HYST
 L_FIRE = CROSS_L + HYST
 R_ARM  = CROSS_R + HYST
 R_FIRE = CROSS_R - HYST
-
 
 # =========================
 # Helpers
