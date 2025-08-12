@@ -3,14 +3,14 @@ import numpy as np
 import cv2
 from picamera2 import Picamera2
 
-# === New: MediaPipe for pinch ===
+# --- MediaPipe for pinch (square input to avoid warnings) ---
 import mediapipe as mp
 mp_hands = mp.solutions.hands
 
 # =========================
 # Ultra-fast swipe via column/row motion energy (LR + UD) + Pinch
 # =========================
-FRAME_W, FRAME_H = 640, 480     # preview
+FRAME_W, FRAME_H = 640, 480     # preview window
 LO_W, LO_H       = 192, 108     # tiny lores (high FPS & low latency)
 
 # Horizontal detection band (rows in lores, normalized 0..1)
@@ -54,12 +54,11 @@ POOL_FRAMES      = 2            # OR of last N diff maps (tiny temporal pool)
 HEADLESS = os.environ.get("DISPLAY", "") == ""
 
 # ---------- Pinch config ----------
-# Hysteresis thresholds: pinch starts when ratio < LOW, ends when ratio > HIGH
-PINCH_RATIO_LOW   = 0.45
-PINCH_RATIO_HIGH  = 0.55
-PINCH_EVERY_N_FRAMES = 2        # run MP every N frames for speed (2=every other)
-PINCH_RESIZE      = (320, 240)  # downscale main RGB for MediaPipe
-IGNORE_SWIPES_WHEN_PINCH = True # set False if you want swipes during pinch
+PINCH_RATIO_LOW   = 0.45        # pinch engages below LOW
+PINCH_RATIO_HIGH  = 0.55        # pinch releases above HIGH
+PINCH_EVERY_N_FRAMES = 2        # run MediaPipe every N frames
+PINCH_SQUARE_SIZE   = 256       # size of centered square passed to MP
+IGNORE_SWIPES_WHEN_PINCH = True
 
 # =========================
 # Helpers
@@ -79,13 +78,23 @@ def smooth1d(v, k):
     return np.convolve(v, kernel, mode="same")
 
 def pinch_ratio(lm):
-    # Landmarks are normalized. Use thumb tip (4), index tip (8),
-    # and a rough hand size (wrist 0 to middle MCP 9).
+    # Thumb tip (4), index tip (8); scale by wrist(0)→middle MCP(9)
     t, i = lm[4], lm[8]
     w, m = lm[0], lm[9]
     d_tip  = ((t.x - i.x)**2 + (t.y - i.y)**2) ** 0.5
     d_size = ((w.x - m.x)**2 + (w.y - m.y)**2) ** 0.5 + 1e-6
     return d_tip / d_size
+
+def center_square_crop_rgb(rgb, out_size):
+    """Center-crop RGB frame to square and resize to out_size x out_size."""
+    h, w, _ = rgb.shape
+    side = min(h, w)
+    y0 = (h - side) // 2
+    x0 = (w - side) // 2
+    sq = rgb[y0:y0+side, x0:x0+side]
+    if side != out_size:
+        sq = cv2.resize(sq, (out_size, out_size), interpolation=cv2.INTER_LINEAR)
+    return sq
 
 # =========================
 # Camera
@@ -127,7 +136,7 @@ last_seen_t_y = 0.0
 
 # Pinch state
 pinch_state = False
-last_pinch_print = None  # to avoid duplicate prints
+last_pinch_print = None
 frame_idx = 0
 
 sx, sy = FRAME_W / LO_W, FRAME_H / LO_H
@@ -136,7 +145,7 @@ y1 = int(ROI_Y1 * LO_H)
 x0 = int(ROI_X0 * LO_W)
 x1 = int(ROI_X1 * LO_W)
 
-# MediaPipe Hands (lightweight settings)
+# MediaPipe Hands (lightweight)
 hands = mp_hands.Hands(
     model_complexity=0,
     max_num_hands=1,
@@ -158,10 +167,10 @@ try:
         x_norm = None
         y_norm = None
 
-        # ---- Pinch (run every N frames to keep FPS high) ----
+        # ---- Pinch (square crop -> no MediaPipe ROI warnings) ----
         if frame_idx % PINCH_EVERY_N_FRAMES == 0:
-            rgb_small = cv2.resize(rgb, PINCH_RESIZE, interpolation=cv2.INTER_LINEAR)
-            res = hands.process(rgb_small)  # expects RGB
+            rgb_sq = center_square_crop_rgb(rgb, PINCH_SQUARE_SIZE)
+            res = hands.process(rgb_sq)  # expects RGB; square avoids warnings
             if res.multi_hand_landmarks:
                 lm = res.multi_hand_landmarks[0].landmark
                 pr = pinch_ratio(lm)
@@ -175,10 +184,6 @@ try:
                     if last_pinch_print != "END":
                         print("PINCH_END")
                         last_pinch_print = "END"
-            else:
-                # if no hand for a bit, relax pinch state back to False
-                # (prevents being stuck if tracking drops mid-pinch)
-                pass
 
         if prev_lo is not None:
             # ---- Raw motion ----
@@ -233,9 +238,9 @@ try:
         prev_lo = lo
 
         # ---- Maintain short windows of positions ----
-        while collections.deque.__len__(trace_x) and (now - trace_x[0][0]) > SPAN_WINDOW_S:
+        while trace_x and (now - trace_x[0][0]) > SPAN_WINDOW_S:
             trace_x.popleft()
-        while collections.deque.__len__(trace_y) and (now - trace_y[0][0]) > SPAN_WINDOW_S:
+        while trace_y and (now - trace_y[0][0]) > SPAN_WINDOW_S:
             trace_y.popleft()
 
         if x_norm is not None:
@@ -291,7 +296,7 @@ try:
             if state_y != "IDLE" and (now - last_seen_t_y) > ABSENCE_RESET_S:
                 state_y = "IDLE"
 
-        # Span + velocity fallback (mid-screen lightning flicks)
+        # Span + velocity fallbacks (mid-screen lightning flicks)
         if not pinch_block and can_fire and gesture_text == "" and span_x >= SPAN_THR_X and abs(vel_x) >= VEL_THR_X:
             if vel_x > 0: print("SWIPE_RIGHT"); gesture_text = "SWIPE_RIGHT"
             else:         print("SWIPE_LEFT");  gesture_text = "SWIPE_LEFT"
