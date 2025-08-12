@@ -130,7 +130,7 @@ try:
         faces = last_faces
         if frame_idx % FACE_CHECK_EVERY == 0:
             gray_small = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-            faces = face_cascade.detectMultiScale(gray_small, scaleFactor=1.1, minNeighbors=3, minSize=(40,40))
+            faces = []
             last_faces = faces
 
         if not got_hand:
@@ -166,8 +166,6 @@ try:
                     if not (AR_MIN <= ar <= AR_MAX):
                         continue
                     x, y, wbb, hbb = cv2.boundingRect(c)
-                    if overlaps_face(x, y, wbb, hbb, faces):
-                        continue
                     candidates.append((area, (x, y, wbb, hbb), (cxp, cyp)))
 
                 if candidates:
