@@ -6,10 +6,12 @@ import mediapipe as mp
 
 # ---- Config ----
 FRAME_W, FRAME_H = 640, 480
-HIST_LEN = 5                  # shorter history => faster swipes
-SPEED_MIN = 0.020             # require a bit more motion for swipe
-DIR_RATIO = 1.8               # stricter axis dominance
-COOLDOWN_S = 0.50             # faster re-trigger for quick flicks
+
+HIST_LEN = 4           # shorter memory
+SPEED_MIN = 0.018      # a bit easier to trigger than before
+DIR_RATIO = 2.0        # stricter axis dominance to avoid diagonal falses
+COOLDOWN_S = 0.40      # allow rapid successive swipes
+
 PINCH_RATIO_THR = 0.45
 
 # Motion fallback
@@ -28,23 +30,29 @@ hands = mp_hands.Hands(
     min_tracking_confidence=0.6,
 )
 
-# ---- Camera ----
+
 picam2 = Picamera2()
 config = picam2.create_video_configuration(
     main={"format":"RGB888", "size":(FRAME_W, FRAME_H)}
 )
 picam2.configure(config)
-# target ~30 fps, lower exposure to reduce motion blur if possible
+
+# Let the ISP handle exposure/ISO & AF
 try:
     picam2.set_controls({
-        "FrameDurationLimits": (33333, 33333),  # ~30fps
-        "ExposureTime": 5000,                   # 1/200s (µs); adjust to taste
-        "AnalogueGain": 2.0,
-        "AfMode": 2,                            # continuous autofocus if supported
+        "AeEnable": True,          # turn Auto-Exposure ON
+        "AwbEnable": True,         # Auto white balance
+        "AfMode": 2,               # continuous AF (if supported)
+        "AfSpeed": 1,              # normal speed
+        "FrameDurationLimits": (16666, 66666),
+        # Optional: remove any FrameDurationLimits/ExposureTime you set earlier
     })
 except Exception:
     pass
+
+
 picam2.start()
+
 
 # ---- State ----
 pts = collections.deque(maxlen=HIST_LEN)   # trajectory (hand or motion)
@@ -105,29 +113,43 @@ try:
                 pinch_text = "PINCH: YES"
 
         # ---------- Fallback: motion-based finger swipe ----------
+        # ---------- Fallback: motion-based finger swipe (low-light friendly) ----------
         if not got_hand:
             gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+
+            # Boost contrast in low light
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+            gray_eq = clahe.apply(gray)
+
             if prev_gray is not None:
-                diff = cv2.absdiff(gray, prev_gray)
-                _, th = cv2.threshold(diff, DIFF_THRESH, 255, cv2.THRESH_BINARY)
+                diff = cv2.absdiff(gray_eq, prev_gray)
+
+                # Adaptive threshold using mean+std; never below 12
+                m, s = cv2.meanStdDev(diff)
+                thr = max(12, float(m[0][0] + 1.5 * s[0][0]))
+                _, th = cv2.threshold(diff, thr, 255, cv2.THRESH_BINARY)
+
+                # Clean up noise
+                th = cv2.medianBlur(th, 3)
                 th = cv2.morphologyEx(th, cv2.MORPH_OPEN, morph, iterations=1)
                 th = cv2.morphologyEx(th, cv2.MORPH_CLOSE, morph, iterations=1)
 
                 cnts, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 if cnts:
                     c = max(cnts, key=cv2.contourArea)
-                    if cv2.contourArea(c) >= MIN_BLOB_AREA:
+                    if cv2.contourArea(c) >= max(120, MIN_BLOB_AREA//2):  # be more permissive in low light
                         (x, y, w, h) = cv2.boundingRect(c)
-                        # centroid in normalized coords
                         cx = (x + w/2) / FRAME_W
                         cy = (y + h/2) / FRAME_H
                         pts.append((cx, cy))
-                        # debug boxes
                         cv2.rectangle(dbg, (x, y), (x+w, y+h), (255,255,255), 2)
-                # optional: show threshold map in a tiny inset
+
+                # optional: show threshold inset
                 small = cv2.resize(th, (160, 120))
                 dbg[0:120, FRAME_W-160:FRAME_W] = cv2.cvtColor(small, cv2.COLOR_GRAY2BGR)
-            prev_gray = gray
+
+            prev_gray = gray_eq
+
 
         # ---------- Decision: swipe (suppressed if pinching) ----------
         now = time.time()
