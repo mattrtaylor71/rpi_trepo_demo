@@ -24,7 +24,11 @@ echo "==> Upgrading pip in venv"
 
 echo "==> Installing Python packages in venv"
 # OpenCV wheel, MediaPipe, NumPy
-"${VENV}/bin/pip" install opencv-python==4.8.1.78 mediapipe==0.10.11 numpy
+"${VENV}/bin/pip" install \
+  opencv-python==4.8.1.78 \
+  "mediapipe==0.10.18" \
+  "numpy<2.0"
+
 
 echo "==> Done. To run your script:"
 echo "source ${VENV}/bin/activate && python gestures.py"
