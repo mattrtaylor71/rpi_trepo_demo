@@ -3,14 +3,10 @@ import numpy as np
 import cv2
 from picamera2 import Picamera2
 
-# --- MediaPipe for pinch (square input to avoid warnings) ---
-import mediapipe as mp
-mp_hands = mp.solutions.hands
-
 # =========================
-# Ultra-fast swipe via column/row motion energy (LR + UD) + Pinch
+# Ultra-fast swipe via column/row motion energy (LR + UD)
 # =========================
-FRAME_W, FRAME_H = 640, 480     # preview window
+FRAME_W, FRAME_H = 640, 480     # preview
 LO_W, LO_H       = 192, 108     # tiny lores (high FPS & low latency)
 
 # Horizontal detection band (rows in lores, normalized 0..1)
@@ -34,7 +30,7 @@ CROSS_B = 0.88
 T_ARM, T_FIRE = CROSS_T - HYST, CROSS_T + HYST
 B_ARM, B_FIRE = CROSS_B + HYST, CROSS_B - HYST
 
-COOLDOWN_S       = 0.12         # shared cooldown for all gestures
+COOLDOWN_S       = 0.12         # quick repeats (shared across axes)
 ABSENCE_RESET_S  = 0.10
 
 # Span/velocity windows (normalized units per second)
@@ -53,13 +49,6 @@ POOL_FRAMES      = 2            # OR of last N diff maps (tiny temporal pool)
 
 HEADLESS = os.environ.get("DISPLAY", "") == ""
 
-# ---------- Pinch config ----------
-PINCH_RATIO_LOW   = 0.45        # pinch engages below LOW
-PINCH_RATIO_HIGH  = 0.55        # pinch releases above HIGH
-PINCH_EVERY_N_FRAMES = 2        # run MediaPipe every N frames
-PINCH_SQUARE_SIZE   = 256       # size of centered square passed to MP
-IGNORE_SWIPES_WHEN_PINCH = True
-
 # =========================
 # Helpers
 # =========================
@@ -76,25 +65,6 @@ def smooth1d(v, k):
     ksz = 2*k + 1
     kernel = np.ones(ksz, dtype=np.float32) / ksz
     return np.convolve(v, kernel, mode="same")
-
-def pinch_ratio(lm):
-    # Thumb tip (4), index tip (8); scale by wrist(0)→middle MCP(9)
-    t, i = lm[4], lm[8]
-    w, m = lm[0], lm[9]
-    d_tip  = ((t.x - i.x)**2 + (t.y - i.y)**2) ** 0.5
-    d_size = ((w.x - m.x)**2 + (w.y - m.y)**2) ** 0.5 + 1e-6
-    return d_tip / d_size
-
-def center_square_crop_rgb(rgb, out_size):
-    """Center-crop RGB frame to square and resize to out_size x out_size."""
-    h, w, _ = rgb.shape
-    side = min(h, w)
-    y0 = (h - side) // 2
-    x0 = (w - side) // 2
-    sq = rgb[y0:y0+side, x0:x0+side]
-    if side != out_size:
-        sq = cv2.resize(sq, (out_size, out_size), interpolation=cv2.INTER_LINEAR)
-    return sq
 
 # =========================
 # Camera
@@ -134,56 +104,24 @@ last_fire = 0.0
 last_seen_t_x = 0.0
 last_seen_t_y = 0.0
 
-# Pinch state
-pinch_state = False
-last_pinch_print = None
-frame_idx = 0
-
 sx, sy = FRAME_W / LO_W, FRAME_H / LO_H
 y0 = int(ROI_Y0 * LO_H)
 y1 = int(ROI_Y1 * LO_H)
 x0 = int(ROI_X0 * LO_W)
 x1 = int(ROI_X1 * LO_W)
 
-# MediaPipe Hands (lightweight)
-hands = mp_hands.Hands(
-    model_complexity=0,
-    max_num_hands=1,
-    min_detection_confidence=0.60,
-    min_tracking_confidence=0.60,
-)
-
 try:
     while True:
         now = time.time()
-        frame_idx += 1
 
         # ---- Get frames ----
         lo = y_plane(picam2.capture_array("lores"))
-        rgb = picam2.capture_array("main")  # RGB for MP + preview
+        rgb = picam2.capture_array("main")
         bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
         dbg = bgr.copy()
 
         x_norm = None
         y_norm = None
-
-        # ---- Pinch (square crop -> no MediaPipe ROI warnings) ----
-        if frame_idx % PINCH_EVERY_N_FRAMES == 0:
-            rgb_sq = center_square_crop_rgb(rgb, PINCH_SQUARE_SIZE)
-            res = hands.process(rgb_sq)  # expects RGB; square avoids warnings
-            if res.multi_hand_landmarks:
-                lm = res.multi_hand_landmarks[0].landmark
-                pr = pinch_ratio(lm)
-                if not pinch_state and pr < PINCH_RATIO_LOW:
-                    pinch_state = True
-                    if last_pinch_print != "START":
-                        print("PINCH_START")
-                        last_pinch_print = "START"
-                elif pinch_state and pr > PINCH_RATIO_HIGH:
-                    pinch_state = False
-                    if last_pinch_print != "END":
-                        print("PINCH_END")
-                        last_pinch_print = "END"
 
         if prev_lo is not None:
             # ---- Raw motion ----
@@ -207,7 +145,7 @@ try:
                 if wsum > 1e-3:
                     cx = float((col_s * xs).sum() / wsum)
                     x_norm = cx / LO_W
-                    # column heat inset
+                    # draw column heat inset
                     bar = (col_s / (col_s.max() + 1e-6) * 255.0).astype(np.uint8)
                     bar = np.tile(bar, (40,1))
                     bar = cv2.cvtColor(bar, cv2.COLOR_GRAY2BGR)
@@ -227,7 +165,7 @@ try:
                 if wsum > 1e-3:
                     cy = float((row_s * ys).sum() / wsum)
                     y_norm = cy / LO_H
-                    # row heat inset (right edge)
+                    # draw row heat inset (right edge)
                     barv = (row_s / (row_s.max() + 1e-6) * 255.0).astype(np.uint8)
                     barv = np.tile(barv[:, None], (1, 40))
                     barv = cv2.cvtColor(barv, cv2.COLOR_GRAY2BGR)
@@ -263,13 +201,12 @@ try:
             span_y = max(ys) - min(ys)
             dt2 = max(1e-3, ts2[-1] - ts2[0]); vel_y = (ys[-1] - ys[0]) / dt2
 
-        # ---- Decide swipes (respect pinch if configured) ----
+        # ---- Decide swipes (share cooldown across axes) ----
         gesture_text = ""
         can_fire = (now - last_fire) > COOLDOWN_S
-        pinch_block = (IGNORE_SWIPES_WHEN_PINCH and pinch_state)
 
         # Horizontal gates
-        if not pinch_block and x_norm is not None:
+        if x_norm is not None:
             if state_x == "IDLE":
                 if x_norm <= L_ARM: state_x = "ARM_RIGHT"
                 elif x_norm >= R_ARM: state_x = "ARM_LEFT"
@@ -283,7 +220,7 @@ try:
                 state_x = "IDLE"
 
         # Vertical gates
-        if not pinch_block and y_norm is not None and gesture_text == "":
+        if y_norm is not None and gesture_text == "":
             if state_y == "IDLE":
                 if y_norm <= T_ARM: state_y = "ARM_DOWN"
                 elif y_norm >= B_ARM: state_y = "ARM_UP"
@@ -297,12 +234,12 @@ try:
                 state_y = "IDLE"
 
         # Span + velocity fallbacks (mid-screen lightning flicks)
-        if not pinch_block and can_fire and gesture_text == "" and span_x >= SPAN_THR_X and abs(vel_x) >= VEL_THR_X:
+        if can_fire and gesture_text == "" and span_x >= SPAN_THR_X and abs(vel_x) >= VEL_THR_X:
             if vel_x > 0: print("SWIPE_RIGHT"); gesture_text = "SWIPE_RIGHT"
             else:         print("SWIPE_LEFT");  gesture_text = "SWIPE_LEFT"
             last_fire = now; state_x = "IDLE"; trace_x.clear()
 
-        if not pinch_block and can_fire and gesture_text == "" and span_y >= SPAN_THR_Y and abs(vel_y) >= VEL_THR_Y:
+        if can_fire and gesture_text == "" and span_y >= SPAN_THR_Y and abs(vel_y) >= VEL_THR_Y:
             if vel_y > 0: print("SWIPE_DOWN"); gesture_text = "SWIPE_DOWN"
             else:         print("SWIPE_UP");   gesture_text = "SWIPE_UP"
             last_fire = now; state_y = "IDLE"; trace_y.clear()
@@ -320,15 +257,15 @@ try:
         # Status
         x_txt = f"x={trace_x[-1][1]:.2f}" if trace_x else "x=--"
         y_txt = f"y={trace_y[-1][1]:.2f}" if trace_y else "y=--"
-        pinch_txt = "PINCH:YES" if pinch_state else "PINCH:NO"
         cv2.putText(dbg, f"{x_txt}  STATE_X={state_x}  spanX={span_x:.2f} velX={vel_x:.2f}",
                     (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
         cv2.putText(dbg, f"{y_txt}  STATE_Y={state_y}  spanY={span_y:.2f} velY={vel_y:.2f}",
                     (20, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
-        cv2.putText(dbg, pinch_txt, (20, 165), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255,255,255), 2)
+        if gesture_text:
+            cv2.putText(dbg, gesture_text, (20, 165), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255,255,255), 2)
 
         if not HEADLESS:
-            cv2.imshow("Swipe (ultrafast LR+UD + Pinch)", dbg)
+            cv2.imshow("Swipe (ultrafast LR+UD)", dbg)
             if cv2.waitKey(1) & 0xFF == 27:
                 break
         else:
